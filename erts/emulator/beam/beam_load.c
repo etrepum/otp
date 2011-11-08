@@ -664,6 +664,7 @@ bin_prep(LoaderState *state, Eterm* modp, byte* bytes, int unloaded_size)
     /*
      * Initialize code area.
      */
+
     state->code_buffer_size = erts_next_heap_size(2048 + state->num_functions, 0);
     state->code = (BeamInstr *) erts_alloc(ERTS_ALC_T_CODE,
 				    sizeof(BeamInstr) * state->code_buffer_size);
@@ -678,6 +679,16 @@ bin_prep(LoaderState *state, Eterm* modp, byte* bytes, int unloaded_size)
     state->code[MI_COMPILE_SIZE] = 0;
     state->code[MI_COMPILE_SIZE_ON_HEAP] = 0;
     state->code[MI_NUM_BREAKPOINTS] = 0;
+
+    /*
+     * Read the atom table.
+     */
+
+    CHKBLK(ERTS_ALC_T_CODE,state->code);
+    define_file(state, "atom table", ATOM_CHUNK);
+    if (!load_atom_table(state)) {
+	goto load_error;
+    }
 
     /*
      * Read the literal table.
@@ -701,15 +712,6 @@ bin_load_prep(LoaderState *state, Process *c_p, Eterm group_leader, ErtsProcLock
     int rval = -1;
 
     state->group_leader = group_leader;
-    /*
-     * Read the atom table.
-     */
-
-    CHKBLK(ERTS_ALC_T_CODE,state->code);
-    define_file(state, "atom table", ATOM_CHUNK);
-    if (!load_atom_table(state)) {
-	goto load_error;
-    }
 
     /*
      * Read the import table.

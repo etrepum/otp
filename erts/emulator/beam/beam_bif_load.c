@@ -67,12 +67,12 @@ load_module_2(BIF_ALIST_2)
     hp = HAlloc(BIF_P, 3);
     sz = binary_size(BIF_ARG_2);
 
+    erts_smp_proc_unlock(BIF_P, ERTS_PROC_LOCK_MAIN);
     if (erts_prep_module(&BIF_ARG_1, code, sz, &state) < 0) {
         reason = am_badfile;
 	res = TUPLE2(hp, am_error, reason);
 	goto prep_done;
     }
-    erts_smp_proc_unlock(BIF_P, ERTS_PROC_LOCK_MAIN);
     erts_smp_block_system(0);
 
     erts_export_consolidate();
@@ -110,8 +110,8 @@ load_module_2(BIF_ALIST_2)
 
  done:
     erts_smp_release_system();
-    erts_smp_proc_lock(BIF_P, ERTS_PROC_LOCK_MAIN);
  prep_done:
+    erts_smp_proc_lock(BIF_P, ERTS_PROC_LOCK_MAIN);
     erts_free_aligned_binary_bytes(temp_alloc);
 
     BIF_RET(res);
