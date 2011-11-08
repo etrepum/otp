@@ -455,8 +455,8 @@ typedef struct {
   } while (0)
 
 
-static int bin_prep(LoaderState *state, Eterm group_leader, Eterm* modp, byte* bytes, int unloaded_size);
-static int bin_load_prep(LoaderState *state, Process *c_p, ErtsProcLocks c_p_locks, Eterm* modp);
+static int bin_prep(LoaderState *state, Eterm* modp, byte* bytes, int unloaded_size);
+static int bin_load_prep(LoaderState *state, Process *c_p, Eterm group_leader, ErtsProcLocks c_p_locks, Eterm* modp);
 static LoaderState* init_state(void);
 static void free_state(LoaderState* stp);
 static int insert_new_code(Process *c_p, ErtsProcLocks c_p_locks,
@@ -552,8 +552,7 @@ define_file(LoaderState* stp, char* name, int idx)
 }
 
 int
-erts_prep_module(Eterm group_leader, Eterm* mod, byte* code, int size,
-                 void** state)
+erts_prep_module(Eterm* mod, byte* code, int size, void** state)
 {
     ErlDrvBinary* bin;
     int result;
@@ -563,7 +562,7 @@ erts_prep_module(Eterm group_leader, Eterm* mod, byte* code, int size,
 	/*
 	 * The BEAM module is not compressed.
 	 */
-      result = bin_prep((LoaderState*)*state, group_leader, mod, code, size);
+      result = bin_prep((LoaderState*)*state, mod, code, size);
     } else {
 	/*
 	 * The BEAM module is compressed (or possibly invalid/corrupted).
@@ -572,7 +571,7 @@ erts_prep_module(Eterm group_leader, Eterm* mod, byte* code, int size,
 	    result = -1;
 	    goto prep_error;
 	}
-        result = bin_prep((LoaderState*)*state, group_leader, mod, (byte*)bin->orig_bytes, bin->orig_size);
+        result = bin_prep((LoaderState*)*state, mod, (byte*)bin->orig_bytes, bin->orig_size);
 	driver_free_binary(bin);
     }
  prep_error:
@@ -584,13 +583,13 @@ erts_prep_module(Eterm group_leader, Eterm* mod, byte* code, int size,
 }
 
 int
-erts_load_prep_module(Process *c_p, ErtsProcLocks c_p_locks, Eterm* modp, void **state)
+erts_load_prep_module(Process *c_p, ErtsProcLocks c_p_locks, Eterm group_leader, Eterm* modp, void **state)
 {
     int result;
     if (*state == NULL) {
         return -1;
     }
-    result = bin_load_prep((LoaderState*)*state, c_p, c_p_locks, modp);
+    result = bin_load_prep((LoaderState*)*state, c_p, c_p_locks, group_leader, modp);
     free_state(*state);
     *state = NULL;
     return result;
@@ -609,11 +608,11 @@ erts_load_module(Process *c_p,
 {
     void *state = NULL;
     int result;
-    result = erts_prep_module(group_leader, modp, code, size, &state);
+    result = erts_prep_module(modp, code, size, &state);
     if (result < 0) {
         return result;
     }
-    return erts_load_prep_module(c_p, c_p_locks, modp, &state);
+    return erts_load_prep_module(c_p, c_p_locks, group_leader, modp, &state);
 }
 /* #define LOAD_MEMORY_HARD_DEBUG 1*/
 
@@ -629,12 +628,11 @@ extern void check_allocated_block(Uint type, void *blk);
 #endif
 
 static int
-bin_prep(LoaderState *state, Eterm group_leader, Eterm* modp, byte* bytes, int unloaded_size)
+bin_prep(LoaderState *state, Eterm* modp, byte* bytes, int unloaded_size)
 {
     int rval = -1;
 
     state->module = *modp;
-    state->group_leader = group_leader;
 
     /*
      * Scan the IFF file.
@@ -698,9 +696,11 @@ bin_prep(LoaderState *state, Eterm group_leader, Eterm* modp, byte* bytes, int u
 }
 
 static int
-bin_load_prep(LoaderState *state, Process *c_p, ErtsProcLocks c_p_locks, Eterm* modp)
+bin_load_prep(LoaderState *state, Process *c_p, Eterm group_leader, ErtsProcLocks c_p_locks, Eterm* modp)
 {
     int rval = -1;
+
+    state->group_leader = group_leader;
     /*
      * Read the atom table.
      */

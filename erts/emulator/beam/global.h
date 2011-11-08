@@ -860,10 +860,10 @@ void erts_system_profile_clear(Process *c_p);
 /* beam_load.c */
 int erts_load_module(Process *c_p, ErtsProcLocks c_p_locks,
 		     Eterm group_leader, Eterm* mod, byte* code, int size);
-int erts_prep_module(Eterm group_leader, Eterm* mod, byte* code, int size,
+int erts_prep_module(Eterm* mod, byte* code, int size,
                      void** state);
 int erts_load_prep_module(Process *c_p, ErtsProcLocks c_p_locks,
-		          Eterm* modp, void** state);
+                          Eterm group_leader, Eterm* modp, void** state);
 void init_load(void);
 BeamInstr* find_function_from_pc(BeamInstr* pc);
 Eterm erts_module_info_0(Process* p, Eterm module);

@@ -54,6 +54,7 @@ load_module_2(BIF_ALIST_2)
     byte*    code;
     Eterm res;
     byte* temp_alloc = NULL;
+    void* state = NULL;
 
     if (is_not_atom(BIF_ARG_1)) {
     error:
@@ -63,17 +64,23 @@ load_module_2(BIF_ALIST_2)
     if ((code = erts_get_aligned_binary_bytes(BIF_ARG_2, &temp_alloc)) == NULL) {
 	goto error;
     }
+    hp = HAlloc(BIF_P, 3);
+    sz = binary_size(BIF_ARG_2);
+
+    if (erts_prep_module(&BIF_ARG_1, code, sz, &state) < 0) {
+        reason = am_badfile;
+	res = TUPLE2(hp, am_error, reason);
+	goto prep_done;
+    }
     erts_smp_proc_unlock(BIF_P, ERTS_PROC_LOCK_MAIN);
     erts_smp_block_system(0);
 
     erts_export_consolidate();
 
-    hp = HAlloc(BIF_P, 3);
-    sz = binary_size(BIF_ARG_2);
-    if ((i = erts_load_module(BIF_P, 0,
-			      BIF_P->group_leader, &BIF_ARG_1, code, sz)) < 0) { 
+    if ((i = erts_load_prep_module(BIF_P, 0,
+			      BIF_P->group_leader, &BIF_ARG_1, &state)) < 0) {
 	switch (i) {
-	case -1: reason = am_badfile; break; 
+	case -1: reason = am_badfile; break;
 	case -2: reason = am_nofile; break;
 	case -3: reason = am_not_purged; break;
 	case -4:
@@ -102,9 +109,10 @@ load_module_2(BIF_ALIST_2)
     res = TUPLE2(hp, am_module, BIF_ARG_1);
 
  done:
-    erts_free_aligned_binary_bytes(temp_alloc);
     erts_smp_release_system();
     erts_smp_proc_lock(BIF_P, ERTS_PROC_LOCK_MAIN);
+ prep_done:
+    erts_free_aligned_binary_bytes(temp_alloc);
 
     BIF_RET(res);
 }
