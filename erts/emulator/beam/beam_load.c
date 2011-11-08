@@ -455,8 +455,8 @@ typedef struct {
   } while (0)
 
 
-static int bin_load(Process *c_p, ErtsProcLocks c_p_locks,
-		    Eterm group_leader, Eterm* modp, byte* bytes, int unloaded_size);
+static int bin_prep(LoaderState *state, Eterm group_leader, Eterm* modp, byte* bytes, int unloaded_size);
+static int bin_load_prep(LoaderState *state, Process *c_p, ErtsProcLocks c_p_locks, Eterm* modp);
 static LoaderState* init_state(void);
 static void free_state(LoaderState* stp);
 static int insert_new_code(Process *c_p, ErtsProcLocks c_p_locks,
@@ -552,6 +552,51 @@ define_file(LoaderState* stp, char* name, int idx)
 }
 
 int
+erts_prep_module(Eterm group_leader, Eterm* mod, byte* code, int size,
+                 void** state)
+{
+    ErlDrvBinary* bin;
+    int result;
+    *state = init_state();
+    if (size >= 4 && code[0] == 'F' && code[1] == 'O' &&
+	code[2] == 'R' && code[3] == '1') {
+	/*
+	 * The BEAM module is not compressed.
+	 */
+      result = bin_prep((LoaderState*)*state, group_leader, mod, code, size);
+    } else {
+	/*
+	 * The BEAM module is compressed (or possibly invalid/corrupted).
+	 */
+	if ((bin = (ErlDrvBinary *) erts_gzinflate_buffer((char*)code, size)) == NULL) {
+	    result = -1;
+	    goto prep_error;
+	}
+        result = bin_prep((LoaderState*)*state, group_leader, mod, (byte*)bin->orig_bytes, bin->orig_size);
+	driver_free_binary(bin);
+    }
+ prep_error:
+    if (result < 0) {
+        free_state(*state);
+        *state = NULL;
+    }
+    return result;
+}
+
+int
+erts_load_prep_module(Process *c_p, ErtsProcLocks c_p_locks, Eterm* modp, void **state)
+{
+    int result;
+    if (*state == NULL) {
+        return -1;
+    }
+    result = bin_load_prep((LoaderState*)*state, c_p, c_p_locks, modp);
+    free_state(*state);
+    *state = NULL;
+    return result;
+}
+
+int
 erts_load_module(Process *c_p,
 		 ErtsProcLocks c_p_locks,
 		 Eterm group_leader, /* Group leader or NIL if none. */
@@ -562,27 +607,13 @@ erts_load_module(Process *c_p,
 		 byte* code,	/* Points to the code to load */
 		 int size)	/* Size of code to load. */
 {
-    ErlDrvBinary* bin;
+    void *state = NULL;
     int result;
-
-    if (size >= 4 && code[0] == 'F' && code[1] == 'O' &&
-	code[2] == 'R' && code[3] == '1') {
-	/*
-	 * The BEAM module is not compressed.
-	 */
-	result = bin_load(c_p, c_p_locks, group_leader, modp, code, size);
-    } else {
-	/*
-	 * The BEAM module is compressed (or possibly invalid/corrupted).
-	 */
-	if ((bin = (ErlDrvBinary *) erts_gzinflate_buffer((char*)code, size)) == NULL) {
-	    return -1;
-	}
-	result = bin_load(c_p, c_p_locks, group_leader, modp,
-			  (byte*)bin->orig_bytes, bin->orig_size);
-	driver_free_binary(bin);
+    result = erts_prep_module(group_leader, modp, code, size, &state);
+    if (result < 0) {
+        return result;
     }
-    return result;
+    return erts_load_prep_module(c_p, c_p_locks, modp, &state);
 }
 /* #define LOAD_MEMORY_HARD_DEBUG 1*/
 
@@ -598,13 +629,10 @@ extern void check_allocated_block(Uint type, void *blk);
 #endif
 
 static int
-bin_load(Process *c_p, ErtsProcLocks c_p_locks,
-	 Eterm group_leader, Eterm* modp, byte* bytes, int unloaded_size)
+bin_prep(LoaderState *state, Eterm group_leader, Eterm* modp, byte* bytes, int unloaded_size)
 {
-    LoaderState *state;
     int rval = -1;
 
-    state = init_state();
     state->module = *modp;
     state->group_leader = group_leader;
 
@@ -653,7 +681,26 @@ bin_load(Process *c_p, ErtsProcLocks c_p_locks,
     state->code[MI_COMPILE_SIZE_ON_HEAP] = 0;
     state->code[MI_NUM_BREAKPOINTS] = 0;
 
+    /*
+     * Read the literal table.
+     */
 
+    CHKBLK(ERTS_ALC_T_CODE,state->code);
+    if (state->chunks[LITERAL_CHUNK].size > 0) {
+	define_file(state, "literals table (constant pool)", LITERAL_CHUNK);
+	if (!read_literal_table(state)) {
+	    goto load_error;
+	}
+    }
+    rval = 0;
+ load_error:
+    return rval;
+}
+
+static int
+bin_load_prep(LoaderState *state, Process *c_p, ErtsProcLocks c_p_locks, Eterm* modp)
+{
+    int rval = -1;
     /*
      * Read the atom table.
      */
@@ -687,18 +734,6 @@ bin_load(Process *c_p, ErtsProcLocks c_p_locks,
     }
 
     /*
-     * Read the literal table.
-     */
-
-    CHKBLK(ERTS_ALC_T_CODE,state->code);
-    if (state->chunks[LITERAL_CHUNK].size > 0) {
-	define_file(state, "literals table (constant pool)", LITERAL_CHUNK);
-	if (!read_literal_table(state)) {
-	    goto load_error;
-	}
-    }
-
-    /*
      * Load the code chunk.
      */
 
@@ -719,7 +754,7 @@ bin_load(Process *c_p, ErtsProcLocks c_p_locks,
      * Read and validate the export table.  (This must be done after
      * loading the code, because it contains labels.)
      */
-    
+
     CHKBLK(ERTS_ALC_T_CODE,state->code);
     define_file(state, "export table", EXP_CHUNK);
     if (!read_export_table(state)) {
@@ -730,7 +765,7 @@ bin_load(Process *c_p, ErtsProcLocks c_p_locks,
      * Ready for the final touch: fixing the export table entries for
      * exported and imported functions.  This can't fail.
      */
-    
+
     CHKBLK(ERTS_ALC_T_CODE,state->code);
     rval = insert_new_code(c_p, c_p_locks, state->group_leader, state->module,
 			   state->code, state->loaded_size, state->catches);
@@ -763,6 +798,12 @@ bin_load(Process *c_p, ErtsProcLocks c_p_locks,
     }
 
  load_error:
+    return rval;
+}
+
+static void
+free_state(LoaderState *state)
+{
     if (state->code != 0) {
 	erts_free(ERTS_ALC_T_CODE, state->code);
     }
@@ -806,15 +847,7 @@ bin_load(Process *c_p, ErtsProcLocks c_p_locks,
 	state->genop_blocks = next;
     }
 
-    free_state(state);
-
-    return rval;
-}
-
-static void
-free_state(LoaderState *stp)
-{
-    erts_free(ERTS_ALC_T_LOADER_TMP, (void *)stp);
+    erts_free(ERTS_ALC_T_LOADER_TMP, (void *) state);
 }
 
 static LoaderState*
@@ -5430,12 +5463,6 @@ erts_make_stub_module(Process* p, Eterm Mod, Eterm Beam, Eterm Info)
 
     if (patch_funentries(Patchlist)) {
 	erts_free_aligned_binary_bytes(temp_alloc);
-	if (state->lambdas != state->def_lambdas) {
-	    erts_free(ERTS_ALC_T_LOADER_TMP, (void *) state->lambdas);
-	}
-	erts_free(ERTS_ALC_T_LOADER_TMP, (void *) state->labels);
-	erts_free(ERTS_ALC_T_LOADER_TMP, (void *) state->atom);
-	erts_free(ERTS_ALC_T_LOADER_TMP, (void *) state->export);
 	if (bin != NULL) {
 	    driver_free_binary(bin);
 	}
@@ -5447,18 +5474,6 @@ erts_make_stub_module(Process* p, Eterm Mod, Eterm Beam, Eterm Info)
     erts_free_aligned_binary_bytes(temp_alloc);
     if (code != NULL) {
 	erts_free(ERTS_ALC_T_CODE, code);
-    }
-    if (state->labels != NULL) {
-	erts_free(ERTS_ALC_T_LOADER_TMP, (void *) state->labels);
-    }
-    if (state->lambdas != state->def_lambdas) {
-	erts_free(ERTS_ALC_T_LOADER_TMP, (void *) state->lambdas);
-    }
-    if (state->atom != NULL) {
-	erts_free(ERTS_ALC_T_LOADER_TMP, (void *) state->atom);
-    }
-    if (state->export != NULL) {
-	erts_free(ERTS_ALC_T_LOADER_TMP, (void *) state->export);
     }
     if (bin != NULL) {
 	driver_free_binary(bin);
