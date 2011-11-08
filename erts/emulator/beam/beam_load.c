@@ -457,7 +457,8 @@ typedef struct {
 
 static int bin_load(Process *c_p, ErtsProcLocks c_p_locks,
 		    Eterm group_leader, Eterm* modp, byte* bytes, int unloaded_size);
-static void init_state(LoaderState* stp);
+static LoaderState* init_state(void);
+static void free_state(LoaderState* stp);
 static int insert_new_code(Process *c_p, ErtsProcLocks c_p_locks,
 			   Eterm group_leader, Eterm module,
 			   BeamInstr* code, Uint size, BeamInstr catches);
@@ -600,12 +601,12 @@ static int
 bin_load(Process *c_p, ErtsProcLocks c_p_locks,
 	 Eterm group_leader, Eterm* modp, byte* bytes, int unloaded_size)
 {
-    LoaderState state;
+    LoaderState *state;
     int rval = -1;
 
-    init_state(&state);
-    state.module = *modp;
-    state.group_leader = group_leader;
+    state = init_state();
+    state->module = *modp;
+    state->group_leader = group_leader;
 
     /*
      * Scan the IFF file.
@@ -616,11 +617,11 @@ bin_load(Process *c_p, ErtsProcLocks c_p_locks,
 #endif
 
     CHKALLOC();
-    CHKBLK(ERTS_ALC_T_CODE,state.code);
-    state.file_name = "IFF header for Beam file";
-    state.file_p = bytes;
-    state.file_left = unloaded_size;
-    if (!scan_iff_file(&state, chunk_types, NUM_CHUNK_TYPES, NUM_MANDATORY)) {
+    CHKBLK(ERTS_ALC_T_CODE,state->code);
+    state->file_name = "IFF header for Beam file";
+    state->file_p = bytes;
+    state->file_left = unloaded_size;
+    if (!scan_iff_file(state, chunk_types, NUM_CHUNK_TYPES, NUM_MANDATORY)) {
 	goto load_error;
     }
 
@@ -628,38 +629,38 @@ bin_load(Process *c_p, ErtsProcLocks c_p_locks,
      * Read the header for the code chunk.
      */
 
-    CHKBLK(ERTS_ALC_T_CODE,state.code);
-    define_file(&state, "code chunk header", CODE_CHUNK);
-    if (!read_code_header(&state)) {
+    CHKBLK(ERTS_ALC_T_CODE,state->code);
+    define_file(state, "code chunk header", CODE_CHUNK);
+    if (!read_code_header(state)) {
 	goto load_error;
     }
 
     /*
      * Initialize code area.
      */
-    state.code_buffer_size = erts_next_heap_size(2048 + state.num_functions, 0);
-    state.code = (BeamInstr *) erts_alloc(ERTS_ALC_T_CODE,
-				    sizeof(BeamInstr) * state.code_buffer_size);
+    state->code_buffer_size = erts_next_heap_size(2048 + state->num_functions, 0);
+    state->code = (BeamInstr *) erts_alloc(ERTS_ALC_T_CODE,
+				    sizeof(BeamInstr) * state->code_buffer_size);
 
-    state.code[MI_NUM_FUNCTIONS] = state.num_functions;
-    state.ci = MI_FUNCTIONS + state.num_functions + 1;
+    state->code[MI_NUM_FUNCTIONS] = state->num_functions;
+    state->ci = MI_FUNCTIONS + state->num_functions + 1;
 
-    state.code[MI_ATTR_PTR] = 0;
-    state.code[MI_ATTR_SIZE] = 0;
-    state.code[MI_ATTR_SIZE_ON_HEAP] = 0;
-    state.code[MI_COMPILE_PTR] = 0;
-    state.code[MI_COMPILE_SIZE] = 0;
-    state.code[MI_COMPILE_SIZE_ON_HEAP] = 0;
-    state.code[MI_NUM_BREAKPOINTS] = 0;
+    state->code[MI_ATTR_PTR] = 0;
+    state->code[MI_ATTR_SIZE] = 0;
+    state->code[MI_ATTR_SIZE_ON_HEAP] = 0;
+    state->code[MI_COMPILE_PTR] = 0;
+    state->code[MI_COMPILE_SIZE] = 0;
+    state->code[MI_COMPILE_SIZE_ON_HEAP] = 0;
+    state->code[MI_NUM_BREAKPOINTS] = 0;
 
 
     /*
      * Read the atom table.
      */
 
-    CHKBLK(ERTS_ALC_T_CODE,state.code);
-    define_file(&state, "atom table", ATOM_CHUNK);
-    if (!load_atom_table(&state)) {
+    CHKBLK(ERTS_ALC_T_CODE,state->code);
+    define_file(state, "atom table", ATOM_CHUNK);
+    if (!load_atom_table(state)) {
 	goto load_error;
     }
 
@@ -667,9 +668,9 @@ bin_load(Process *c_p, ErtsProcLocks c_p_locks,
      * Read the import table.
      */
 
-    CHKBLK(ERTS_ALC_T_CODE,state.code);
-    define_file(&state, "import table", IMP_CHUNK);
-    if (!load_import_table(&state)) {
+    CHKBLK(ERTS_ALC_T_CODE,state->code);
+    define_file(state, "import table", IMP_CHUNK);
+    if (!load_import_table(state)) {
 	goto load_error;
     }
 
@@ -677,10 +678,10 @@ bin_load(Process *c_p, ErtsProcLocks c_p_locks,
      * Read the lambda (fun) table.
      */
 
-    CHKBLK(ERTS_ALC_T_CODE,state.code);
-    if (state.chunks[LAMBDA_CHUNK].size > 0) {
-	define_file(&state, "lambda (fun) table", LAMBDA_CHUNK);
-	if (!read_lambda_table(&state)) {
+    CHKBLK(ERTS_ALC_T_CODE,state->code);
+    if (state->chunks[LAMBDA_CHUNK].size > 0) {
+	define_file(state, "lambda (fun) table", LAMBDA_CHUNK);
+	if (!read_lambda_table(state)) {
 	    goto load_error;
 	}
     }
@@ -689,10 +690,10 @@ bin_load(Process *c_p, ErtsProcLocks c_p_locks,
      * Read the literal table.
      */
 
-    CHKBLK(ERTS_ALC_T_CODE,state.code);
-    if (state.chunks[LITERAL_CHUNK].size > 0) {
-	define_file(&state, "literals table (constant pool)", LITERAL_CHUNK);
-	if (!read_literal_table(&state)) {
+    CHKBLK(ERTS_ALC_T_CODE,state->code);
+    if (state->chunks[LITERAL_CHUNK].size > 0) {
+	define_file(state, "literals table (constant pool)", LITERAL_CHUNK);
+	if (!read_literal_table(state)) {
 	    goto load_error;
 	}
     }
@@ -701,15 +702,15 @@ bin_load(Process *c_p, ErtsProcLocks c_p_locks,
      * Load the code chunk.
      */
 
-    CHKBLK(ERTS_ALC_T_CODE,state.code);
-    state.file_name = "code chunk";
-    state.file_p = state.code_start;
-    state.file_left = state.code_size;
-    if (!load_code(&state)) {
+    CHKBLK(ERTS_ALC_T_CODE,state->code);
+    state->file_name = "code chunk";
+    state->file_p = state->code_start;
+    state->file_left = state->code_size;
+    if (!load_code(state)) {
 	goto load_error;
     }
-    CHKBLK(ERTS_ALC_T_CODE,state.code);
-    if (!freeze_code(&state)) {
+    CHKBLK(ERTS_ALC_T_CODE,state->code);
+    if (!freeze_code(state)) {
 	goto load_error;
     }
 
@@ -719,9 +720,9 @@ bin_load(Process *c_p, ErtsProcLocks c_p_locks,
      * loading the code, because it contains labels.)
      */
     
-    CHKBLK(ERTS_ALC_T_CODE,state.code);
-    define_file(&state, "export table", EXP_CHUNK);
-    if (!read_export_table(&state)) {
+    CHKBLK(ERTS_ALC_T_CODE,state->code);
+    define_file(state, "export table", EXP_CHUNK);
+    if (!read_export_table(state)) {
 	goto load_error;
     }
 
@@ -730,88 +731,96 @@ bin_load(Process *c_p, ErtsProcLocks c_p_locks,
      * exported and imported functions.  This can't fail.
      */
     
-    CHKBLK(ERTS_ALC_T_CODE,state.code);
-    rval = insert_new_code(c_p, c_p_locks, state.group_leader, state.module,
-			   state.code, state.loaded_size, state.catches);
+    CHKBLK(ERTS_ALC_T_CODE,state->code);
+    rval = insert_new_code(c_p, c_p_locks, state->group_leader, state->module,
+			   state->code, state->loaded_size, state->catches);
     if (rval < 0) {
 	goto load_error;
     }
-    CHKBLK(ERTS_ALC_T_CODE,state.code);
-    final_touch(&state);
+    CHKBLK(ERTS_ALC_T_CODE,state->code);
+    final_touch(state);
 
     /*
      * Loading succeded.
      */
-    CHKBLK(ERTS_ALC_T_CODE,state.code);
+    CHKBLK(ERTS_ALC_T_CODE,state->code);
 #if defined(LOAD_MEMORY_HARD_DEBUG) && defined(DEBUG)
     erts_fprintf(stderr,"Loaded %T\n",*modp);
 #if 0
-    debug_dump_code(state.code,state.ci);
+    debug_dump_code(state->code,state->ci);
 #endif
 #endif
     rval = 0;
-    state.code = NULL;		/* Prevent code from being freed. */
-    *modp = state.module;
+    state->code = NULL;		/* Prevent code from being freed. */
+    *modp = state->module;
 
     /*
      * If there is an on_load function, signal an error to
      * indicate that the on_load function must be run.
      */
-    if (state.on_load) {
+    if (state->on_load) {
 	rval = -5;
     }
 
  load_error:
-    if (state.code != 0) {
-	erts_free(ERTS_ALC_T_CODE, state.code);
+    if (state->code != 0) {
+	erts_free(ERTS_ALC_T_CODE, state->code);
     }
-    if (state.labels != NULL) {
-	erts_free(ERTS_ALC_T_LOADER_TMP, (void *) state.labels);
+    if (state->labels != NULL) {
+	erts_free(ERTS_ALC_T_LOADER_TMP, (void *) state->labels);
     }
-    if (state.atom != NULL) {
-	erts_free(ERTS_ALC_T_LOADER_TMP, (void *) state.atom);
+    if (state->atom != NULL) {
+	erts_free(ERTS_ALC_T_LOADER_TMP, (void *) state->atom);
     }
-    if (state.import != NULL) {
-	erts_free(ERTS_ALC_T_LOADER_TMP, (void *) state.import);
+    if (state->import != NULL) {
+	erts_free(ERTS_ALC_T_LOADER_TMP, (void *) state->import);
     }
-    if (state.export != NULL) {
-	erts_free(ERTS_ALC_T_LOADER_TMP, (void *) state.export);
+    if (state->export != NULL) {
+	erts_free(ERTS_ALC_T_LOADER_TMP, (void *) state->export);
     }
-    if (state.lambdas != state.def_lambdas) {
-	erts_free(ERTS_ALC_T_LOADER_TMP, (void *) state.lambdas);
+    if (state->lambdas != state->def_lambdas) {
+	erts_free(ERTS_ALC_T_LOADER_TMP, (void *) state->lambdas);
     }
-    if (state.literals != NULL) {
+    if (state->literals != NULL) {
 	int i;
-	for (i = 0; i < state.num_literals; i++) {
-	    if (state.literals[i].heap != NULL) {
-		erts_free(ERTS_ALC_T_LOADER_TMP, (void *) state.literals[i].heap);
+	for (i = 0; i < state->num_literals; i++) {
+	    if (state->literals[i].heap != NULL) {
+		erts_free(ERTS_ALC_T_LOADER_TMP, (void *) state->literals[i].heap);
 	    }
 	}
-	erts_free(ERTS_ALC_T_LOADER_TMP, (void *) state.literals);
+	erts_free(ERTS_ALC_T_LOADER_TMP, (void *) state->literals);
     }
-    while (state.literal_patches != NULL) {
-	LiteralPatch* next = state.literal_patches->next;
-	erts_free(ERTS_ALC_T_LOADER_TMP, (void *) state.literal_patches);
-	state.literal_patches = next;
+    while (state->literal_patches != NULL) {
+	LiteralPatch* next = state->literal_patches->next;
+	erts_free(ERTS_ALC_T_LOADER_TMP, (void *) state->literal_patches);
+	state->literal_patches = next;
     }
-    while (state.string_patches != NULL) {
-	StringPatch* next = state.string_patches->next;
-	erts_free(ERTS_ALC_T_LOADER_TMP, (void *) state.string_patches);
-	state.string_patches = next;
+    while (state->string_patches != NULL) {
+	StringPatch* next = state->string_patches->next;
+	erts_free(ERTS_ALC_T_LOADER_TMP, (void *) state->string_patches);
+	state->string_patches = next;
     }
-    while (state.genop_blocks) {
-	GenOpBlock* next = state.genop_blocks->next;
-	erts_free(ERTS_ALC_T_LOADER_TMP, (void *) state.genop_blocks);
-	state.genop_blocks = next;
+    while (state->genop_blocks) {
+	GenOpBlock* next = state->genop_blocks->next;
+	erts_free(ERTS_ALC_T_LOADER_TMP, (void *) state->genop_blocks);
+	state->genop_blocks = next;
     }
+
+    free_state(state);
 
     return rval;
 }
 
-
 static void
-init_state(LoaderState* stp)
+free_state(LoaderState *stp)
 {
+    erts_free(ERTS_ALC_T_LOADER_TMP, (void *)stp);
+}
+
+static LoaderState*
+init_state(void)
+{
+    LoaderState* stp = erts_alloc(ERTS_ALC_T_LOADER_TMP, sizeof(LoaderState));
     stp->function = THE_NON_VALUE; /* Function not known yet */
     stp->arity = 0;
     stp->specific_op = -1;
@@ -835,6 +844,7 @@ init_state(LoaderState* stp)
     stp->string_patches = 0;
     stp->may_load_nif = 0;
     stp->on_load = 0;
+    return stp;
 }
 
 static int
@@ -5200,7 +5210,7 @@ patch_funentries(Eterm Patchlist)
 Eterm
 erts_make_stub_module(Process* p, Eterm Mod, Eterm Beam, Eterm Info)
 {
-    LoaderState state;
+    LoaderState* state;
     BeamInstr Funcs;
     BeamInstr Patchlist;
     Eterm* tp;
@@ -5219,10 +5229,10 @@ erts_make_stub_module(Process* p, Eterm Mod, Eterm Beam, Eterm Info)
     Uint size;
 
     /*
-     * Must initialize state.lambdas here because the error handling code
+     * Must initialize state->lambdas here because the error handling code
      * at label 'error' uses it.
      */
-    init_state(&state);
+    state = init_state();
 
     if (is_not_atom(Mod)) {
 	goto error;
@@ -5262,31 +5272,31 @@ erts_make_stub_module(Process* p, Eterm Mod, Eterm Beam, Eterm Info)
      * Scan the Beam binary and read the interesting sections.
      */
 
-    state.file_name = "IFF header for Beam file";
-    state.file_p = bytes;
-    state.file_left = size;
-    state.module = Mod;
-    state.group_leader = p->group_leader;
-    state.num_functions = n;
-    if (!scan_iff_file(&state, chunk_types, NUM_CHUNK_TYPES, NUM_MANDATORY)) {
+    state->file_name = "IFF header for Beam file";
+    state->file_p = bytes;
+    state->file_left = size;
+    state->module = Mod;
+    state->group_leader = p->group_leader;
+    state->num_functions = n;
+    if (!scan_iff_file(state, chunk_types, NUM_CHUNK_TYPES, NUM_MANDATORY)) {
 	goto error;
     }
-    define_file(&state, "code chunk header", CODE_CHUNK);
-    if (!read_code_header(&state)) {
+    define_file(state, "code chunk header", CODE_CHUNK);
+    if (!read_code_header(state)) {
 	goto error;
     }
-    define_file(&state, "atom table", ATOM_CHUNK);
-    if (!load_atom_table(&state)) {
+    define_file(state, "atom table", ATOM_CHUNK);
+    if (!load_atom_table(state)) {
 	goto error;
     }
-    define_file(&state, "export table", EXP_CHUNK);
-    if (!stub_read_export_table(&state)) {
+    define_file(state, "export table", EXP_CHUNK);
+    if (!stub_read_export_table(state)) {
 	goto error;
     }
     
-    if (state.chunks[LAMBDA_CHUNK].size > 0) {
-	define_file(&state, "lambda (fun) table", LAMBDA_CHUNK);
-	if (!read_lambda_table(&state)) {
+    if (state->chunks[LAMBDA_CHUNK].size > 0) {
+	define_file(state, "lambda (fun) table", LAMBDA_CHUNK);
+	if (!read_lambda_table(state)) {
 	    goto error;
 	}
     }
@@ -5296,8 +5306,8 @@ erts_make_stub_module(Process* p, Eterm Mod, Eterm Beam, Eterm Info)
      */
 
     code_size = ((WORDS_PER_FUNCTION+1)*n + MI_FUNCTIONS + 2) * sizeof(BeamInstr);
-    code_size += state.chunks[ATTR_CHUNK].size;
-    code_size += state.chunks[COMPILE_CHUNK].size;
+    code_size += state->chunks[ATTR_CHUNK].size;
+    code_size += state->chunks[COMPILE_CHUNK].size;
     code = erts_alloc_fnf(ERTS_ALC_T_CODE, code_size);
     if (!code) {
 	goto error;
@@ -5387,12 +5397,12 @@ erts_make_stub_module(Process* p, Eterm Mod, Eterm Beam, Eterm Info)
      */
 
     info = (byte *) fp;
-    info = stub_copy_info(&state, ATTR_CHUNK, info,
+    info = stub_copy_info(state, ATTR_CHUNK, info,
 			  code+MI_ATTR_PTR, code+MI_ATTR_SIZE_ON_HEAP);
     if (info == NULL) {
 	goto error;
     }
-    info = stub_copy_info(&state, COMPILE_CHUNK, info,
+    info = stub_copy_info(state, COMPILE_CHUNK, info,
 			  code+MI_COMPILE_PTR, code+MI_COMPILE_SIZE_ON_HEAP);
     if (info == NULL) {
 	goto error;
@@ -5414,21 +5424,22 @@ erts_make_stub_module(Process* p, Eterm Mod, Eterm Beam, Eterm Info)
 
     fp = code + ci;
     for (i = 0; i < n; i++) {
-	stub_final_touch(&state, fp);
+	stub_final_touch(state, fp);
 	fp += WORDS_PER_FUNCTION;
     }
 
     if (patch_funentries(Patchlist)) {
 	erts_free_aligned_binary_bytes(temp_alloc);
-	if (state.lambdas != state.def_lambdas) {
-	    erts_free(ERTS_ALC_T_LOADER_TMP, (void *) state.lambdas);
+	if (state->lambdas != state->def_lambdas) {
+	    erts_free(ERTS_ALC_T_LOADER_TMP, (void *) state->lambdas);
 	}
-	erts_free(ERTS_ALC_T_LOADER_TMP, (void *) state.labels);
-	erts_free(ERTS_ALC_T_LOADER_TMP, (void *) state.atom);
-	erts_free(ERTS_ALC_T_LOADER_TMP, (void *) state.export);
+	erts_free(ERTS_ALC_T_LOADER_TMP, (void *) state->labels);
+	erts_free(ERTS_ALC_T_LOADER_TMP, (void *) state->atom);
+	erts_free(ERTS_ALC_T_LOADER_TMP, (void *) state->export);
 	if (bin != NULL) {
 	    driver_free_binary(bin);
 	}
+        free_state(state);
 	return Mod;
     }
 
@@ -5437,23 +5448,23 @@ erts_make_stub_module(Process* p, Eterm Mod, Eterm Beam, Eterm Info)
     if (code != NULL) {
 	erts_free(ERTS_ALC_T_CODE, code);
     }
-    if (state.labels != NULL) {
-	erts_free(ERTS_ALC_T_LOADER_TMP, (void *) state.labels);
+    if (state->labels != NULL) {
+	erts_free(ERTS_ALC_T_LOADER_TMP, (void *) state->labels);
     }
-    if (state.lambdas != state.def_lambdas) {
-	erts_free(ERTS_ALC_T_LOADER_TMP, (void *) state.lambdas);
+    if (state->lambdas != state->def_lambdas) {
+	erts_free(ERTS_ALC_T_LOADER_TMP, (void *) state->lambdas);
     }
-    if (state.atom != NULL) {
-	erts_free(ERTS_ALC_T_LOADER_TMP, (void *) state.atom);
+    if (state->atom != NULL) {
+	erts_free(ERTS_ALC_T_LOADER_TMP, (void *) state->atom);
     }
-    if (state.export != NULL) {
-	erts_free(ERTS_ALC_T_LOADER_TMP, (void *) state.export);
+    if (state->export != NULL) {
+	erts_free(ERTS_ALC_T_LOADER_TMP, (void *) state->export);
     }
     if (bin != NULL) {
 	driver_free_binary(bin);
     }
+    free_state(state);
 
-	
     BIF_ERROR(p, BADARG);
 }
 
